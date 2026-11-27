@@ -1,0 +1,96 @@
+
+pipeline {
+    agent {label 'dev'}
+
+    stages {
+
+        stage('Clone Repo') {
+            steps {
+                git url: 'https://github.com/prathmesh0717/easy-curd-jenkins.git',
+                    branch: 'main'
+            }
+        }
+
+        stage('Build Frontend Image') {
+            steps {
+                sh '''
+                    docker build --no-cache \
+                    -t prathmesh72/frontend:latest \
+                    ./frontend
+                '''
+            }
+        }
+
+        stage('Docker Hub Login & Push') {
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'dockerhub-cred',
+                        passwordVariable: 'PASSWORD',
+                        usernameVariable: 'USERNAME'
+                    )
+                ]) {
+                    sh '''
+                        set -e
+
+                        echo "$PASSWORD" | docker login \
+                            -u "$USERNAME" \
+                            --password-stdin
+
+                        docker push prathmesh72/frontend:latest
+                    '''
+                }
+            }
+        }
+
+        stage('Run Frontend Container') {
+            steps {
+                sh '''
+                    docker rm -f frontend || true
+
+                    docker run -d \
+                        --name frontend \
+                        -p 80:80 \
+                        prathmesh72/frontend:latest
+                '''
+            }
+        }
+
+        stage('Deploy to EKS') {
+            steps {
+                withCredentials([
+                    aws(
+                        accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+                        credentialsId: 'AWS-cred',
+                        secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
+                    )
+                ]) {
+                    sh '''
+                        set -e
+
+                        echo "=== AWS Identity ==="
+                        aws sts get-caller-identity
+
+                        echo "=== Update kubeconfig ==="
+                        aws eks update-kubeconfig \
+                            --region us-east-1 \
+                            --name pk-cluster
+
+                        echo "=== Nodes ==="
+                        kubectl get nodes
+
+                        echo "=== Deploy Frontend ==="
+                        kubectl apply -f frontend/frontend-deploy.yml
+                        kubectl apply -f frontend/frontend-svc.yml
+
+                        echo "=== Pods ==="
+                        kubectl get pods
+
+                        echo "=== Services ==="
+                        kubectl get svc
+                    '''
+                }
+            }
+        }
+    }
+}
